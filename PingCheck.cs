@@ -6,6 +6,7 @@ using System.IO;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -15,7 +16,7 @@ using System.Windows.Forms;
 
 public static class NetProbe
 {
-    public class HostItem { public string Host; public int Port; public string Label; }
+    public class HostItem { public string Host; public int Port; public string Label; public string Scheme = "https"; }
     public class Config
     {
         public List<HostItem> Hosts = new List<HostItem>();
@@ -23,6 +24,7 @@ public static class NetProbe
         public int HttpTimeoutMs = 6000;   // TCP/TLS/HTTP 超时
         public int Tries = 2;              // ping 次数
         public bool IcmpEnabled = true;    // 是否顺带做 ICMP 参考
+        public SslProtocols TlsProtos = SslProtocols.Tls12 | SslProtocols.Tls11 | SslProtocols.Tls;
         public string Proxy = "auto";      // auto | direct | http://host:port | socks5://host:port
         public ProxyInfo Resolved = null;
         public string ProxyNote = "";
@@ -76,6 +78,18 @@ public static class NetProbe
                 t.AppendLine("#   example.com            测 HTTPS(443) 能不能真正打开，同时 ping 作参考");
                 t.AppendLine("#   example.com:8443       指定端口");
                 t.AppendLine("#   x.com 推特              可选显示名，用空格或逗号分隔");
+                t.AppendLine("# tcp/host:port            只测端口通不通（SSH 等非 HTTPS 端口用这个）");
+                t.AppendLine("#");
+                t.AppendLine("# ---- git / GitHub 需要的端点（按需取消注释） ----");
+                t.AppendLine("# github.com                    网页 + clone/push (HTTPS)");
+                t.AppendLine("# api.github.com                API / 令牌校验 / 设备码登录");
+                t.AppendLine("# codeload.github.com           下载源码包");
+                t.AppendLine("# raw.githubusercontent.com     raw 文件");
+                t.AppendLine("# objects.githubusercontent.com 附件 / LFS 对象");
+                t.AppendLine("# github.githubassets.com       网页静态资源");
+                t.AppendLine("# tcp/github.com:22             SSH 直连方式");
+                t.AppendLine("# tcp/ssh.github.com:443        22 被封时的 SSH over 443");
+                t.AppendLine("#");
                 t.AppendLine("# timeout=1200             单次 ping 超时(毫秒)");
                 t.AppendLine("# http_timeout=6000        HTTPS 连接/读取超时(毫秒)");
                 t.AppendLine("# tries=2                  每个域名 ping 次数");
@@ -94,6 +108,8 @@ public static class NetProbe
             {
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith("#") || line.StartsWith("//")) continue;
+
+                string scheme = "https";
 
                 if (line.StartsWith("timeout="))
                 {
@@ -122,6 +138,9 @@ public static class NetProbe
                     continue;
                 }
 
+                if (line.StartsWith("tcp/", StringComparison.OrdinalIgnoreCase)) { scheme = "tcp"; line = line.Substring(4).Trim(); }
+                else if (line.StartsWith("https/", StringComparison.OrdinalIgnoreCase)) { scheme = "https"; line = line.Substring(6).Trim(); }
+
                 string name = null;
                 int sp = line.IndexOfAny(new char[] { ' ', '\t', ',' });
                 if (sp > 0) { name = line.Substring(sp + 1).Trim(); line = line.Substring(0, sp).Trim(); }
@@ -140,6 +159,7 @@ public static class NetProbe
                 if (line.Length == 0) continue;
 
                 HostItem h = new HostItem();
+                h.Scheme = scheme;
                 h.Host = line;
                 h.Port = port;
                 h.Label = string.IsNullOrEmpty(name) ? line : name;
@@ -542,6 +562,20 @@ public static class NetProbe
                     }
                 }
 
+                if (h.Scheme == "tcp")
+                {
+                    r.Ok = true;
+                    r.TcpMs = sw.ElapsedMilliseconds;
+                    r.HttpMs = r.TcpMs;
+                    r.Mode = "TCP 通";
+                    r.Remark = (px.Kind == "direct")
+                        ? ("端口 " + h.Port + " 可连接（tcp/ 只测端口）")
+                        : ("经 " + r.Via + " 连上端口 " + h.Port);
+                    try { client.Close(); } catch { }
+                    client = null;
+                    return;
+                }
+
                 r.TcpMs = sw.ElapsedMilliseconds;
 
                 string mode; string remark;
@@ -589,12 +623,13 @@ public static class NetProbe
             ssl.ReadTimeout = cfg.HttpTimeoutMs;
             ssl.WriteTimeout = cfg.HttpTimeoutMs;
 
-            try { ssl.AuthenticateAsClient(h.Host); }
+            try { ssl.AuthenticateAsClient(h.Host, null, cfg.TlsProtos, false); }
             catch (Exception ex)
             {
                 tlsMs = -1;
                 mode = "TLS 失败";
                 remark = "TCP 通了但 TLS 握手失败（" + Short(ex) + "），典型的链路拦截 / 中间设备重置";
+                if (h.Port != 443) remark += "；该端口不是 443，若它不是 HTTPS 服务（如 SSH），请改成 tcp/" + h.Host + ":" + h.Port;
                 try { ssl.Close(); } catch { }
                 return false;
             }
@@ -654,6 +689,29 @@ public static class NetProbe
         }
 
         RunHttp(h, cfg, r);
+
+        // 有些服务器不接受老旧握手（.NET 默认含 SSL3/TLS1.0）→ 换"系统默认协议"重连一次
+        if (!r.Ok && r.Mode == "TLS 失败" && cfg.TlsProtos != SslProtocols.None)
+        {
+            Config alt = new Config();
+            alt.Hosts = cfg.Hosts;
+            alt.PingTimeoutMs = cfg.PingTimeoutMs;
+            alt.HttpTimeoutMs = cfg.HttpTimeoutMs;
+            alt.Tries = cfg.Tries;
+            alt.IcmpEnabled = cfg.IcmpEnabled;
+            alt.Proxy = cfg.Proxy;
+            alt.Resolved = cfg.Resolved;
+            alt.ProxyNote = cfg.ProxyNote;
+            alt.TlsProtos = SslProtocols.None;
+
+            Result r2 = new Result();
+            r2.Target = h;
+            r2.IcmpMs = r.IcmpMs;
+            r2.Sent = r.Sent;
+            r2.Recv = r.Recv;
+            RunHttp(h, alt, r2);
+            if (r2.Ok) return r2;
+        }
 
         if (!r.Ok && (r.Mode == "TLS 失败" || r.Mode == "TCP 失败" || r.Mode == "HTTP 无响应"))
         {
