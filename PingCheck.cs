@@ -823,7 +823,7 @@ public static class NetProbe
         foreach (Result r in rs) if (r != null && r.Ok) ok++;
 
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("网络连通性检测 v5    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
+        sb.AppendLine("网络连通性检测 v6    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
         sb.AppendLine("--------------------------------------------------------------");
         foreach (Result r in rs)
         {
@@ -852,13 +852,14 @@ public class ProbeForm : Form
     private ListView list;
     private Button btnCopy, btnRerun, btnEdit, btnClose;
     private ListViewItem[] rows;
+    private Color[][] cells;
     private long elapsedMs;
     public string ReportText = "";
 
     public ProbeForm(NetProbe.Config config)
     {
         cfg = config;
-        this.Text = "网络连通性检测 v5";
+        this.Text = "网络连通性检测 v6";
         this.ClientSize = new Size(960, 500);
         this.StartPosition = FormStartPosition.CenterScreen;
         this.Font = new Font("Microsoft YaHei UI", 9F);
@@ -903,15 +904,19 @@ public class ProbeForm : Form
         list.Location = new Point(14, 110);
         list.Size = new Size(932, 330);
         list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        list.Columns.Add("状态", 62);
-        list.Columns.Add("域名", 128);
+        list.Columns.Add("", 40);
+        list.Columns.Add("域名", 132);
         list.Columns.Add("这个链接是干嘛的", 190);
-        list.Columns.Add("结果", 215);
+        list.Columns.Add("结果", 233);
         list.Columns.Add("HTTPS总", 72);
         list.Columns.Add("TLS", 62);
         list.Columns.Add("ICMP", 62);
         list.Columns.Add("方式", 80);
         list.Columns.Add("IP 地址", 105);
+        list.OwnerDraw = true;
+        list.DrawColumnHeader += List_DrawColumnHeader;
+        list.DrawItem += List_DrawItem;
+        list.DrawSubItem += List_DrawSubItem;
         list.DoubleClick += delegate(object s, EventArgs e)
         {
             if (list.SelectedItems.Count > 0)
@@ -969,6 +974,35 @@ public class ProbeForm : Form
         this.Controls.Add(btnClose);
     }
 
+    // ---------- 自绘表格：每个单元格用自己的颜色 ----------
+    private void List_DrawColumnHeader(object sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        e.DrawDefault = true;
+    }
+
+    private void List_DrawItem(object sender, DrawListViewItemEventArgs e)
+    {
+        // 全部由 DrawSubItem 画，这里不画
+    }
+
+    private void List_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
+    {
+        if (e.ItemIndex < 0) return;
+
+        Color back = e.Item.Selected ? Color.FromArgb(51, 122, 183) : Color.White;
+        Color fore = Color.Black;
+        if (e.Item.Selected) fore = Color.White;
+        else if (cells != null && e.ItemIndex < cells.Length && cells[e.ItemIndex] != null && e.ColumnIndex < cells[e.ItemIndex].Length)
+            fore = cells[e.ItemIndex][e.ColumnIndex];
+
+        using (Brush b = new SolidBrush(back))
+            e.Graphics.FillRectangle(b, e.Bounds);
+
+        Rectangle r = new Rectangle(e.Bounds.X + 2, e.Bounds.Y, e.Bounds.Width - 4, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, e.SubItem.Text, list.Font, r, fore,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
     private int AddLegend(int x, int y, string text, Color color)
     {
         Label l = new Label();
@@ -998,6 +1032,12 @@ public class ProbeForm : Form
 
         list.Items.Clear();
         rows = new ListViewItem[cfg.Hosts.Count];
+        cells = new Color[cfg.Hosts.Count][];
+        for (int k = 0; k < cfg.Hosts.Count; k++)
+        {
+            cells[k] = new Color[list.Columns.Count];
+            for (int c = 0; c < cells[k].Length; c++) cells[k][c] = Color.Black;
+        }
         for (int i = 0; i < cfg.Hosts.Count; i++)
         {
             ListViewItem it = new ListViewItem(new string[] { "…", cfg.Hosts[i].Label, "", "", "", "", "", "", "" });
@@ -1044,7 +1084,8 @@ public class ProbeForm : Form
     {
         while (it.SubItems.Count <= index) it.SubItems.Add("");
         it.SubItems[index].Text = text;
-        it.SubItems[index].ForeColor = color;
+        if (cells != null && it.Index >= 0 && it.Index < cells.Length && index < cells[it.Index].Length)
+            cells[it.Index][index] = color;
     }
 
     private void FillRowUi(int i, NetProbe.Result r)
@@ -1052,26 +1093,19 @@ public class ProbeForm : Form
         if (i < 0 || i >= rows.Length) return;
 
         ListViewItem it = rows[i];
-        it.UseItemStyleForSubItems = false;
 
         Color okColor = Color.FromArgb(34, 153, 84);
         Color badColor = Color.FromArgb(203, 45, 45);
         Color plain = Color.Black;
 
-        // 状态：能连=绿，不能连=红
-        SetSub(it, 0, r.Ok ? "√ 可访问" : "× 打不开", r.Ok ? okColor : badColor);
-        // 这个链接是干嘛的：默认黑
-        SetSub(it, 2, r.Use, plain);
-        // 结果：能连=绿，不能连=红
-        SetSub(it, 3, r.Ok ? r.OkText : r.FailText, r.Ok ? okColor : badColor);
-        // 三个耗时：各自按自己的数值上色，没有值就是黑
+        SetSub(it, 0, r.Ok ? "√" : "×", r.Ok ? okColor : badColor);                  // 状态：只给符号
+        SetSub(it, 2, r.Use, plain);                                                // 这个链接是干嘛的
+        SetSub(it, 3, r.Ok ? r.OkText : r.FailText, r.Ok ? okColor : badColor);     // 结果
         SetSub(it, 4, r.Ok ? (r.HttpMs + " ms") : "--", NetProbe.MsColor(r.Ok ? r.HttpMs : -1));
         SetSub(it, 5, (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--", NetProbe.MsColor(r.TlsMs));
         SetSub(it, 6, (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--", NetProbe.MsColor(r.IcmpMs));
-        // 方式：成功=绿，失败=红
-        SetSub(it, 7, r.Mode, r.Ok ? okColor : badColor);
-        // IP：默认黑
-        SetSub(it, 8, r.Ip, plain);
+        SetSub(it, 7, r.Mode, r.Ok ? okColor : badColor);                            // 方式
+        SetSub(it, 8, r.Ip, plain);                                                  // IP
         it.ForeColor = NetProbe.TierColor(r);
     }
 
