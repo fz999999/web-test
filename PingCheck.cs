@@ -690,27 +690,37 @@ public static class NetProbe
 
         RunHttp(h, cfg, r);
 
-        // 有些服务器不接受老旧握手（.NET 默认含 SSL3/TLS1.0）→ 换"系统默认协议"重连一次
-        if (!r.Ok && r.Mode == "TLS 失败" && cfg.TlsProtos != SslProtocols.None)
+        // TLS 失败重试：① 同一套协议重连一次（"远程方已关闭传输流"这类瞬时失败很常见）
+        //              ② 仍失败则换"系统默认协议"（含 TLS1.3）再试
+        if (!r.Ok && r.Mode == "TLS 失败")
         {
-            Config alt = new Config();
-            alt.Hosts = cfg.Hosts;
-            alt.PingTimeoutMs = cfg.PingTimeoutMs;
-            alt.HttpTimeoutMs = cfg.HttpTimeoutMs;
-            alt.Tries = cfg.Tries;
-            alt.IcmpEnabled = cfg.IcmpEnabled;
-            alt.Proxy = cfg.Proxy;
-            alt.Resolved = cfg.Resolved;
-            alt.ProxyNote = cfg.ProxyNote;
-            alt.TlsProtos = SslProtocols.None;
+            SslProtocols[] ladder = new SslProtocols[] { cfg.TlsProtos, SslProtocols.None };
+            for (int a = 0; a < ladder.Length; a++)
+            {
+                if (ladder[a] == cfg.TlsProtos && a == 0)
+                {
+                    // 第一轮：同协议重连
+                }
+                Config alt = new Config();
+                alt.Hosts = cfg.Hosts;
+                alt.PingTimeoutMs = cfg.PingTimeoutMs;
+                alt.HttpTimeoutMs = cfg.HttpTimeoutMs;
+                alt.Tries = cfg.Tries;
+                alt.IcmpEnabled = cfg.IcmpEnabled;
+                alt.Proxy = cfg.Proxy;
+                alt.Resolved = cfg.Resolved;
+                alt.ProxyNote = cfg.ProxyNote;
+                alt.TlsProtos = ladder[a];
 
-            Result r2 = new Result();
-            r2.Target = h;
-            r2.IcmpMs = r.IcmpMs;
-            r2.Sent = r.Sent;
-            r2.Recv = r.Recv;
-            RunHttp(h, alt, r2);
-            if (r2.Ok) return r2;
+                Result r2 = new Result();
+                r2.Target = h;
+                r2.IcmpMs = r.IcmpMs;
+                r2.Sent = r.Sent;
+                r2.Recv = r.Recv;
+                RunHttp(h, alt, r2);
+                if (r2.Ok) return r2;
+                if (r2.Mode != "TLS 失败") break;
+            }
         }
 
         if (!r.Ok && (r.Mode == "TLS 失败" || r.Mode == "TCP 失败" || r.Mode == "HTTP 无响应"))
@@ -736,7 +746,7 @@ public static class NetProbe
         foreach (Result r in rs) if (r != null && r.Ok) ok++;
 
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("网络连通性检测    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
+        sb.AppendLine("网络连通性检测 v4    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
         sb.AppendLine("--------------------------------------------------------------");
         foreach (Result r in rs)
         {
@@ -772,7 +782,7 @@ public class ProbeForm : Form
     public ProbeForm(NetProbe.Config config)
     {
         cfg = config;
-        this.Text = "网络连通性检测";
+        this.Text = "网络连通性检测 v4";
         this.ClientSize = new Size(960, 500);
         this.StartPosition = FormStartPosition.CenterScreen;
         this.Font = new Font("Microsoft YaHei UI", 9F);
