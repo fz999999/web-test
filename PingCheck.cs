@@ -24,6 +24,9 @@ public static class NetProbe
         public int HttpTimeoutMs = 6000;   // TCP/TLS/HTTP 超时
         public int Tries = 2;              // ping 次数
         public bool IcmpEnabled = true;    // 是否顺带做 ICMP 参考
+        public bool DirectCheck = true;    // 主路线走代理时，是否再测一遍直连做对照
+        public int DirectTimeoutMs = 3000; // 直连对照的超时
+        public int MaxIps = 3;             // 每个域名最多试几个解析 IP
         public SslProtocols TlsProtos = SslProtocols.Tls12 | SslProtocols.Tls11 | SslProtocols.Tls;
         public string Proxy = "auto";      // auto | direct | http://host:port | socks5://host:port
         public ProxyInfo Resolved = null;
@@ -46,6 +49,9 @@ public static class NetProbe
         public string Use = "";
         public string OkText = "";
         public string FailText = "";
+        public bool DirectTested;
+        public bool DirectOk;
+        public long DirectMs = -1;
         public int Recv;
         public int Sent;
     }
@@ -147,6 +153,8 @@ public static class NetProbe
                 t.AppendLine("# http_timeout=6000        HTTPS 连接/读取超时(毫秒)");
                 t.AppendLine("# tries=2                  每个域名 ping 次数");
                 t.AppendLine("# icmp=on                  是否顺带 ping（只作参考，关掉更快）");
+                t.AppendLine("# direct_check=on          走代理时，额外测一遍\"直连\"做对照（能看出\"没开代理时到底能不能开\"）");
+                t.AppendLine("# direct_timeout=3000      直连对照的超时(毫秒)");
                 t.AppendLine("proxy=auto");
                 t.AppendLine("# proxy=direct           强制直连");
                 t.AppendLine("# proxy=socks5://127.0.0.1:10808   指定 SOCKS5（v2rayN 默认端口）");
@@ -183,6 +191,17 @@ public static class NetProbe
                 {
                     string v = CleanValue(line.Substring(5)).ToLower();
                     cfg.IcmpEnabled = !(v == "0" || v == "off" || v == "false" || v == "no");
+                    continue;
+                }
+                if (line.StartsWith("direct_check="))
+                {
+                    string v = CleanValue(line.Substring(13)).ToLower();
+                    cfg.DirectCheck = !(v == "0" || v == "off" || v == "false" || v == "no");
+                    continue;
+                }
+                if (line.StartsWith("direct_timeout="))
+                {
+                    int v; if (int.TryParse(CleanValue(line.Substring(15)), out v) && v >= 500) cfg.DirectTimeoutMs = v;
                     continue;
                 }
                 if (line.StartsWith("proxy="))
@@ -583,7 +602,7 @@ public static class NetProbe
             {
                 targets = ResolveHost(h.Host);
                 if (targets.Count == 0) { r.Mode = "DNS 失败"; r.Remark = "域名解析失败"; return; }
-                if (targets.Count > 3) targets = targets.GetRange(0, 3);
+                if (targets.Count > cfg.MaxIps) targets = targets.GetRange(0, cfg.MaxIps);
                 r.Via = "直连";
             }
             else
@@ -790,6 +809,33 @@ public static class NetProbe
             }
         }
 
+        // 主路线走的是代理时，再单独测一次"直连"，做对照
+        if (cfg.DirectCheck && cfg.Resolved != null && cfg.Resolved.Kind != "direct")
+        {
+            ProxyInfo dpx = new ProxyInfo();
+            dpx.Kind = "direct";
+
+            Config dc = new Config();
+            dc.Hosts = cfg.Hosts;
+            dc.PingTimeoutMs = cfg.PingTimeoutMs;
+            dc.HttpTimeoutMs = Math.Min(cfg.HttpTimeoutMs, cfg.DirectTimeoutMs);
+            dc.Tries = cfg.Tries;
+            dc.IcmpEnabled = false;
+            dc.DirectCheck = false;
+            dc.MaxIps = 1;
+            dc.Proxy = "direct";
+            dc.ProxyNote = "直连";
+            dc.Resolved = dpx;
+
+            Result rd = new Result();
+            rd.Target = h;
+            RunHttp(h, dc, rd);
+            r.DirectTested = true;
+            r.DirectOk = rd.Ok;
+            r.DirectMs = rd.Ok ? rd.HttpMs : -1;
+            if (r.Ip.Length == 0 && rd.Ip.Length > 0) r.Ip = rd.Ip;   // 走代理时目标 IP 由代理解析，这里补上直连解析到的 IP
+        }
+
         if (!r.Ok && (r.Mode == "TLS 失败" || r.Mode == "TCP 失败" || r.Mode == "HTTP 无响应"))
         {
             string icmp = (r.IcmpMs >= 0) ? ("ICMP 有回包 " + r.IcmpMs + " ms") : "ICMP 也无回包";
@@ -823,24 +869,26 @@ public static class NetProbe
         foreach (Result r in rs) if (r != null && r.Ok) ok++;
 
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("网络连通性检测 v6    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
+        sb.AppendLine("网络连通性检测 v7    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
         sb.AppendLine("--------------------------------------------------------------");
         foreach (Result r in rs)
         {
             if (r == null) continue;
             string icmp = (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--";
             string tls = (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--";
+            string dnote = !r.DirectTested ? "" : (r.DirectOk ? "  [直连也能开" + (r.DirectMs >= 0 ? " " + r.DirectMs + "ms" : "") + "]" : "  [直连打不开]");
             if (r.Ok)
-                sb.AppendLine(string.Format("[√] {0,-20} 总 {1,-8} TLS {2,-7} ICMP {3,-7} {4,-9} {5,-16} {6}", r.Target.Label, r.HttpMs + " ms", tls, icmp, r.Mode, r.Ip, r.OkText));
+                sb.AppendLine(string.Format("[√] {0,-20} 总 {1,-8} TLS {2,-7} ICMP {3,-7} {4,-9} {5,-16} {6}{7}", r.Target.Label, r.HttpMs + " ms", tls, icmp, r.Mode, r.Ip, r.OkText, dnote));
             else
-                sb.AppendLine(string.Format("[×] {0,-20} 打不开   TLS {1,-7} ICMP {2,-7} {3,-9} {4}｜{5}（{6}）", r.Target.Label, tls, icmp, r.Mode, r.FailText, r.Use, r.Remark));
+                sb.AppendLine(string.Format("[×] {0,-20} 打不开   TLS {1,-7} ICMP {2,-7} {3,-9} {4}｜{5}（{6}）{7}", r.Target.Label, tls, icmp, r.Mode, r.FailText, r.Use, r.Remark, dnote));
         }
         sb.AppendLine("--------------------------------------------------------------");
         sb.AppendLine(string.Format("结果：{0}/{1} 可访问，{2} 个打不开，总耗时 {3:0.0} 秒。", ok, rs.Count, rs.Count - ok, totalMs / 1000.0));
         sb.AppendLine("判定：以能否完成 HTTPS 请求拿到状态码为准（tcp/ 开头的只测端口）；ICMP 只作参考。");
         sb.AppendLine("配色：按 HTTPS 总耗时 绿 ≤200ms · 蓝 ≤500ms · 黄 ≤1000ms · 橙 >1000ms · 红 打不开");
-        sb.AppendLine("说明：总 = HTTPS 全流程耗时（连接 + TLS + 首字节），这就是浏览器打开这个站点大概要等的时间；");
-        sb.AppendLine("      走代理时「连接」是连本地代理的耗时，真实网络耗时体现在「总」和「TLS」上；ICMP 只是参考。");
+        sb.AppendLine("说明：状态列 = 本次实际走的那条路（表头有写）；直连列 = 不走代理时的对照结果；");
+        sb.AppendLine("      总 = HTTPS 全流程耗时（连接 + TLS + 首字节），约等于浏览器打开这个站点要等的时间；");
+        sb.AppendLine("      直连列：√ = 不走代理也能开，× = 只有走代理能开（浏览器没开代理时就打不开）；ICMP 只是参考。");
         return sb.ToString();
     }
 }
@@ -859,7 +907,7 @@ public class ProbeForm : Form
     public ProbeForm(NetProbe.Config config)
     {
         cfg = config;
-        this.Text = "网络连通性检测 v6";
+        this.Text = "网络连通性检测 v7";
         this.ClientSize = new Size(960, 500);
         this.StartPosition = FormStartPosition.CenterScreen;
         this.Font = new Font("Microsoft YaHei UI", 9F);
@@ -905,14 +953,15 @@ public class ProbeForm : Form
         list.Size = new Size(932, 330);
         list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         list.Columns.Add("", 40);
-        list.Columns.Add("域名", 132);
-        list.Columns.Add("这个链接是干嘛的", 190);
-        list.Columns.Add("结果", 233);
+        list.Columns.Add("直连", 46);
+        list.Columns.Add("域名", 122);
+        list.Columns.Add("这个链接是干嘛的", 176);
+        list.Columns.Add("结果", 210);
         list.Columns.Add("HTTPS总", 72);
         list.Columns.Add("TLS", 62);
         list.Columns.Add("ICMP", 62);
-        list.Columns.Add("方式", 80);
-        list.Columns.Add("IP 地址", 105);
+        list.Columns.Add("方式", 76);
+        list.Columns.Add("IP 地址", 100);
         list.OwnerDraw = true;
         list.DrawColumnHeader += List_DrawColumnHeader;
         list.DrawItem += List_DrawItem;
@@ -1040,7 +1089,7 @@ public class ProbeForm : Form
         }
         for (int i = 0; i < cfg.Hosts.Count; i++)
         {
-            ListViewItem it = new ListViewItem(new string[] { "…", cfg.Hosts[i].Label, "", "", "", "", "", "", "" });
+            ListViewItem it = new ListViewItem(new string[] { "…", "", cfg.Hosts[i].Label, "", "", "", "", "", "", "" });
             it.ForeColor = Color.FromArgb(120, 120, 120);
             list.Items.Add(it);
             rows[i] = it;
@@ -1099,13 +1148,24 @@ public class ProbeForm : Form
         Color plain = Color.Black;
 
         SetSub(it, 0, r.Ok ? "√" : "×", r.Ok ? okColor : badColor);                  // 状态：只给符号
-        SetSub(it, 2, r.Use, plain);                                                // 这个链接是干嘛的
-        SetSub(it, 3, r.Ok ? r.OkText : r.FailText, r.Ok ? okColor : badColor);     // 结果
-        SetSub(it, 4, r.Ok ? (r.HttpMs + " ms") : "--", NetProbe.MsColor(r.Ok ? r.HttpMs : -1));
-        SetSub(it, 5, (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--", NetProbe.MsColor(r.TlsMs));
-        SetSub(it, 6, (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--", NetProbe.MsColor(r.IcmpMs));
-        SetSub(it, 7, r.Mode, r.Ok ? okColor : badColor);                            // 方式
-        SetSub(it, 8, r.Ip, plain);                                                  // IP
+
+        // 直连对照：√=直连也能开  ×=直连打不开  –=没测（本来就走的直连）
+        string dTxt = r.DirectTested ? (r.DirectOk ? "√" : "×") : "–";
+        Color dColor = r.DirectTested ? (r.DirectOk ? okColor : badColor) : plain;
+        SetSub(it, 1, dTxt, dColor);
+
+        SetSub(it, 3, r.Use, plain);                                                // 这个链接是干嘛的
+
+        string verdict = r.Ok ? r.OkText : r.FailText;
+        if (r.DirectTested && r.Ok && !r.DirectOk) verdict = verdict + "（仅代理可开）";
+        if (r.DirectTested && !r.Ok && r.DirectOk) verdict = verdict + "（仅直连可开）";
+        SetSub(it, 4, verdict, r.Ok ? okColor : badColor);                           // 结果
+
+        SetSub(it, 5, r.Ok ? (r.HttpMs + " ms") : "--", NetProbe.MsColor(r.Ok ? r.HttpMs : -1));
+        SetSub(it, 6, (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--", NetProbe.MsColor(r.TlsMs));
+        SetSub(it, 7, (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--", NetProbe.MsColor(r.IcmpMs));
+        SetSub(it, 8, r.Mode, r.Ok ? okColor : badColor);                            // 方式
+        SetSub(it, 9, r.Ip, plain);                                                  // IP
         it.ForeColor = NetProbe.TierColor(r);
     }
 

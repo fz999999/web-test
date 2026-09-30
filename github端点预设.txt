@@ -7,13 +7,13 @@
 #   host:8443           指定端口，同样走 HTTPS
 #   tcp/host:22         只测端口通不通（SSH 这类非 HTTPS 端口必须加 tcp/ 前缀）
 #   host | 用途 | 通了的说明 | 不通的说明        自定义"这个链接是干嘛的 / 后果"
-#   # 开头整行注释；proxy= / timeout= / icmp= 等是设置项
+#   # 开头整行注释；proxy= / icmp= / direct_check= 等是设置项
 #
-# 下面这些 GitHub 端点，用途和通/不通的后果程序里已经内置（不用自己写），
-# 直接列域名就有中文说明。想改成自己的措辞，按上面第 4 条加 | 即可。
+# 下面这些 GitHub 端点，用途和通/不通的后果程序里已经内置，直接列域名就有中文说明。
 
 proxy=auto
 icmp=off
+direct_check=on      # 走代理时额外测一遍"直连"，用来判断"没开代理时到底能不能开"
 
 # ---- git 走 HTTPS（clone / fetch / pull / push）必需 ----
 github.com
