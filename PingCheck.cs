@@ -869,7 +869,7 @@ public static class NetProbe
         foreach (Result r in rs) if (r != null && r.Ok) ok++;
 
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("网络连通性检测 v7    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
+        sb.AppendLine("网络连通性检测 v8    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
         sb.AppendLine("--------------------------------------------------------------");
         foreach (Result r in rs)
         {
@@ -907,7 +907,7 @@ public class ProbeForm : Form
     public ProbeForm(NetProbe.Config config)
     {
         cfg = config;
-        this.Text = "网络连通性检测 v7";
+        this.Text = "网络连通性检测 v8";
         this.ClientSize = new Size(960, 500);
         this.StartPosition = FormStartPosition.CenterScreen;
         this.Font = new Font("Microsoft YaHei UI", 9F);
@@ -952,11 +952,11 @@ public class ProbeForm : Form
         list.Location = new Point(14, 110);
         list.Size = new Size(932, 330);
         list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        list.Columns.Add("", 40);
+        list.Columns.Add("状态", 48);
         list.Columns.Add("直连", 46);
         list.Columns.Add("域名", 122);
         list.Columns.Add("这个链接是干嘛的", 176);
-        list.Columns.Add("结果", 210);
+        list.Columns.Add("结果", 202);
         list.Columns.Add("HTTPS总", 72);
         list.Columns.Add("TLS", 62);
         list.Columns.Add("ICMP", 62);
