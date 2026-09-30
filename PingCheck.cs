@@ -16,7 +16,7 @@ using System.Windows.Forms;
 
 public static class NetProbe
 {
-    public class HostItem { public string Host; public int Port; public string Label; public string Scheme = "https"; }
+    public class HostItem { public string Host; public int Port; public string Label; public string Scheme = "https"; public string Use; public string OkText; public string FailText; }
     public class Config
     {
         public List<HostItem> Hosts = new List<HostItem>();
@@ -43,6 +43,9 @@ public static class NetProbe
         public string Via = "直连";
         public string Status = "";
         public string Remark = "";
+        public string Use = "";
+        public string OkText = "";
+        public string FailText = "";
         public int Recv;
         public int Sent;
     }
@@ -50,6 +53,56 @@ public static class NetProbe
     public static string ConfigPath()
     {
         return Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuickerPing"), "hosts.txt");
+    }
+
+    // 常见端点的"这个链接是干嘛的 / 通了好在哪 / 不通会怎样"
+    private static readonly Dictionary<string, string[]> Known = BuildKnown();
+
+    private static Dictionary<string, string[]> BuildKnown()
+    {
+        Dictionary<string, string[]> d = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        d["github.com"] = new string[] { "网页 + git 主通道（clone/fetch/push）", "网页能开，git 推拉正常", "网页和 git 全部不可用" };
+        d["github.com:22"] = new string[] { "git 走 SSH（22 端口）", "SSH 方式推拉正常", "SSH 方式不可用（22 被封或代理不支持 22）" };
+        d["ssh.github.com"] = new string[] { "git 走 SSH over 443", "SSH over 443 可用", "SSH over 443 也不可用" };
+        d["ssh.github.com:443"] = d["ssh.github.com"];
+        d["api.github.com"] = new string[] { "API / 令牌校验 / 设备码登录", "认证和 API 正常，推送不会反复要登录", "认证/API 不通：推送可能反复要求登录或报错" };
+        d["codeload.github.com"] = new string[] { "下载 zip / tar.gz 源码包", "源码包可以正常下载", "下载源码包会失败" };
+        d["raw.githubusercontent.com"] = new string[] { "raw 文件内容", "raw 链接可以正常打开", "raw 链接打不开" };
+        d["objects.githubusercontent.com"] = new string[] { "Release 附件 / LFS 对象", "附件和 LFS 可以正常拉取", "附件 / LFS 拉取失败" };
+        d["github.githubassets.com"] = new string[] { "网页样式和脚本等静态资源", "网页可以完整加载", "网页加载不全（样式、脚本缺失）" };
+        d["alive.github.com"] = new string[] { "登录态心跳", "登录状态保持正常", "长时间不操作可能掉登录" };
+        d["collector.github.com"] = new string[] { "前端埋点上报", "不影响使用", "不影响使用（只是埋点丢失）" };
+        d["media.githubusercontent.com"] = new string[] { "LFS 文件下载", "LFS 文件可以下载", "LFS 文件下载失败" };
+        d["github-cloud.s3.amazonaws.com"] = new string[] { "LFS / 附件走 S3", "附件可以下载", "附件 / LFS 下载失败" };
+        d["avatars.githubusercontent.com"] = new string[] { "头像图片", "头像正常显示", "头像显示不出来（不影响功能）" };
+        d["baidu.com"] = new string[] { "普通网站", "网站可以正常打开", "网站打不开" };
+        d["google.com"] = new string[] { "普通网站", "网站可以正常打开", "网站打不开" };
+        d["www.google.com"] = d["google.com"];
+        d["x.com"] = new string[] { "普通网站", "网站可以正常打开", "网站打不开" };
+        return d;
+    }
+
+    // 取某个端点的说明（配置文件里写了就用配置的，否则用内置表）
+    private static void Describe(HostItem h, out string use, out string okText, out string failText)
+    {
+        use = (h.Use == null) ? "" : h.Use;
+        okText = (h.OkText == null) ? "" : h.OkText;
+        failText = (h.FailText == null) ? "" : h.FailText;
+
+        string[] t = null;
+        string key = h.Host.ToLower() + ":" + h.Port;
+        if (Known.ContainsKey(key)) t = Known[key];
+        else if (Known.ContainsKey(h.Host.ToLower())) t = Known[h.Host.ToLower()];
+
+        if (t != null)
+        {
+            if (use.Length == 0) use = t[0];
+            if (okText.Length == 0) okText = t[1];
+            if (failText.Length == 0) failText = t[2];
+        }
+        if (use.Length == 0) use = h.Scheme == "tcp" ? ("端口 " + h.Port + " 探测") : "自定义域名";
+        if (okText.Length == 0) okText = h.Scheme == "tcp" ? ("端口 " + h.Port + " 可以连接") : "可以正常访问";
+        if (failText.Length == 0) failText = h.Scheme == "tcp" ? ("端口 " + h.Port + " 连不上") : "打不开";
     }
 
     // 取值：支持行内 # 注释，以及 "值 + 空格 + 说明文字" 的写法（只取第一段）
@@ -138,6 +191,16 @@ public static class NetProbe
                     continue;
                 }
 
+                string useText = null; string okText = null; string failText = null;
+                if (line.IndexOf('|') >= 0)
+                {
+                    string[] seg = line.Split('|');
+                    line = seg[0].Trim();
+                    if (seg.Length > 1) useText = seg[1].Trim();
+                    if (seg.Length > 2) okText = seg[2].Trim();
+                    if (seg.Length > 3) failText = seg[3].Trim();
+                }
+
                 if (line.StartsWith("tcp/", StringComparison.OrdinalIgnoreCase)) { scheme = "tcp"; line = line.Substring(4).Trim(); }
                 else if (line.StartsWith("https/", StringComparison.OrdinalIgnoreCase)) { scheme = "https"; line = line.Substring(6).Trim(); }
 
@@ -160,6 +223,9 @@ public static class NetProbe
 
                 HostItem h = new HostItem();
                 h.Scheme = scheme;
+                h.Use = useText;
+                h.OkText = okText;
+                h.FailText = failText;
                 h.Host = line;
                 h.Port = port;
                 h.Label = string.IsNullOrEmpty(name) ? line : name;
@@ -676,6 +742,7 @@ public static class NetProbe
     {
         Result r = new Result();
         r.Target = h;
+        Describe(h, out r.Use, out r.OkText, out r.FailText);
 
         for (int i = 0; cfg.IcmpEnabled && i < cfg.Tries; i++)
         {
@@ -731,6 +798,16 @@ public static class NetProbe
         return r;
     }
 
+    // 单个数字的配色（延迟越小区间越"好"）
+    public static Color MsColor(long ms)
+    {
+        if (ms < 0) return Color.Black;
+        if (ms <= 200) return Color.FromArgb(34, 153, 84);
+        if (ms <= 500) return Color.FromArgb(41, 128, 185);
+        if (ms <= 1000) return Color.FromArgb(191, 143, 0);
+        return Color.FromArgb(211, 84, 0);
+    }
+
     public static Color TierColor(Result r)
     {
         if (!r.Ok) return Color.FromArgb(203, 45, 45);
@@ -746,22 +823,21 @@ public static class NetProbe
         foreach (Result r in rs) if (r != null && r.Ok) ok++;
 
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("网络连通性检测 v4    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
+        sb.AppendLine("网络连通性检测 v5    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "    代理：" + proxyNote);
         sb.AppendLine("--------------------------------------------------------------");
         foreach (Result r in rs)
         {
             if (r == null) continue;
             string icmp = (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--";
-            string tcp = (r.TcpMs >= 0) ? (r.TcpMs + " ms") : "--";
             string tls = (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--";
             if (r.Ok)
-                sb.AppendLine(string.Format("[√] {0,-18} 总 {1,-8} 连接 {2,-7} TLS {3,-7} ICMP {4,-7} {5}  {6}", r.Target.Label, r.HttpMs + " ms", tcp, tls, icmp, r.Mode, r.Ip));
+                sb.AppendLine(string.Format("[√] {0,-20} 总 {1,-8} TLS {2,-7} ICMP {3,-7} {4,-9} {5,-16} {6}", r.Target.Label, r.HttpMs + " ms", tls, icmp, r.Mode, r.Ip, r.OkText));
             else
-                sb.AppendLine(string.Format("[×] {0,-18} 打不开   连接 {1,-7} TLS {2,-7} ICMP {3,-7} {4}  {5}", r.Target.Label, tcp, tls, icmp, r.Mode, r.Remark));
+                sb.AppendLine(string.Format("[×] {0,-20} 打不开   TLS {1,-7} ICMP {2,-7} {3,-9} {4}｜{5}（{6}）", r.Target.Label, tls, icmp, r.Mode, r.FailText, r.Use, r.Remark));
         }
         sb.AppendLine("--------------------------------------------------------------");
         sb.AppendLine(string.Format("结果：{0}/{1} 可访问，{2} 个打不开，总耗时 {3:0.0} 秒。", ok, rs.Count, rs.Count - ok, totalMs / 1000.0));
-        sb.AppendLine("判定：以能否完成 HTTPS 请求（拿到 HTTP 状态码）为准，ICMP 只作参考。");
+        sb.AppendLine("判定：以能否完成 HTTPS 请求拿到状态码为准（tcp/ 开头的只测端口）；ICMP 只作参考。");
         sb.AppendLine("配色：按 HTTPS 总耗时 绿 ≤200ms · 蓝 ≤500ms · 黄 ≤1000ms · 橙 >1000ms · 红 打不开");
         sb.AppendLine("说明：总 = HTTPS 全流程耗时（连接 + TLS + 首字节），这就是浏览器打开这个站点大概要等的时间；");
         sb.AppendLine("      走代理时「连接」是连本地代理的耗时，真实网络耗时体现在「总」和「TLS」上；ICMP 只是参考。");
@@ -782,7 +858,7 @@ public class ProbeForm : Form
     public ProbeForm(NetProbe.Config config)
     {
         cfg = config;
-        this.Text = "网络连通性检测 v4";
+        this.Text = "网络连通性检测 v5";
         this.ClientSize = new Size(960, 500);
         this.StartPosition = FormStartPosition.CenterScreen;
         this.Font = new Font("Microsoft YaHei UI", 9F);
@@ -827,15 +903,15 @@ public class ProbeForm : Form
         list.Location = new Point(14, 110);
         list.Size = new Size(932, 330);
         list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        list.Columns.Add("状态", 64);
-        list.Columns.Add("域名", 150);
-        list.Columns.Add("HTTPS总", 80);
-        list.Columns.Add("连接", 70);
-        list.Columns.Add("TLS", 70);
-        list.Columns.Add("ICMP", 70);
-        list.Columns.Add("方式", 95);
-        list.Columns.Add("IP 地址", 130);
-        list.Columns.Add("备注", 203);
+        list.Columns.Add("状态", 62);
+        list.Columns.Add("域名", 128);
+        list.Columns.Add("这个链接是干嘛的", 190);
+        list.Columns.Add("结果", 215);
+        list.Columns.Add("HTTPS总", 72);
+        list.Columns.Add("TLS", 62);
+        list.Columns.Add("ICMP", 62);
+        list.Columns.Add("方式", 80);
+        list.Columns.Add("IP 地址", 105);
         list.DoubleClick += delegate(object s, EventArgs e)
         {
             if (list.SelectedItems.Count > 0)
@@ -964,10 +1040,11 @@ public class ProbeForm : Form
     }
 
     // 安全写单元格：列数变化时自动补 SubItem，避免 index 越界崩溃
-    private void SetSub(ListViewItem it, int index, string text)
+    private void SetSub(ListViewItem it, int index, string text, Color color)
     {
         while (it.SubItems.Count <= index) it.SubItems.Add("");
         it.SubItems[index].Text = text;
+        it.SubItems[index].ForeColor = color;
     }
 
     private void FillRowUi(int i, NetProbe.Result r)
@@ -975,14 +1052,26 @@ public class ProbeForm : Form
         if (i < 0 || i >= rows.Length) return;
 
         ListViewItem it = rows[i];
-        SetSub(it, 0, r.Ok ? "√ 可访问" : "× 打不开");
-        SetSub(it, 2, r.Ok ? (r.HttpMs + " ms") : "--");
-        SetSub(it, 3, (r.TcpMs >= 0) ? (r.TcpMs + " ms") : "--");
-        SetSub(it, 4, (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--");
-        SetSub(it, 5, (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--");
-        SetSub(it, 6, r.Mode);
-        SetSub(it, 7, r.Ip);
-        SetSub(it, 8, r.Remark);
+        it.UseItemStyleForSubItems = false;
+
+        Color okColor = Color.FromArgb(34, 153, 84);
+        Color badColor = Color.FromArgb(203, 45, 45);
+        Color plain = Color.Black;
+
+        // 状态：能连=绿，不能连=红
+        SetSub(it, 0, r.Ok ? "√ 可访问" : "× 打不开", r.Ok ? okColor : badColor);
+        // 这个链接是干嘛的：默认黑
+        SetSub(it, 2, r.Use, plain);
+        // 结果：能连=绿，不能连=红
+        SetSub(it, 3, r.Ok ? r.OkText : r.FailText, r.Ok ? okColor : badColor);
+        // 三个耗时：各自按自己的数值上色，没有值就是黑
+        SetSub(it, 4, r.Ok ? (r.HttpMs + " ms") : "--", NetProbe.MsColor(r.Ok ? r.HttpMs : -1));
+        SetSub(it, 5, (r.TlsMs >= 0) ? (r.TlsMs + " ms") : "--", NetProbe.MsColor(r.TlsMs));
+        SetSub(it, 6, (r.IcmpMs >= 0) ? (r.IcmpMs + " ms") : "--", NetProbe.MsColor(r.IcmpMs));
+        // 方式：成功=绿，失败=红
+        SetSub(it, 7, r.Mode, r.Ok ? okColor : badColor);
+        // IP：默认黑
+        SetSub(it, 8, r.Ip, plain);
         it.ForeColor = NetProbe.TierColor(r);
     }
 
@@ -1004,7 +1093,7 @@ public class ProbeForm : Form
         else if (ok == 0) lblSummary.ForeColor = Color.FromArgb(203, 45, 45);
         else lblSummary.ForeColor = Color.FromArgb(191, 143, 0);
         btnRerun.Enabled = true;
-        lblStatus.Text = "总 = HTTPS 全流程耗时；走代理时「连接」= 连本地代理耗时，真实耗时看「总」。双击行复制域名。";
+        lblStatus.Text = "颜色：状态/结果/方式 通=绿 不通=红；三个耗时各自按快慢上色（绿≤200 蓝≤500 黄≤1000 橙>1000）。双击行复制域名。";
     }
 }
 

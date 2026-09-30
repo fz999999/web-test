@@ -1,27 +1,38 @@
 # ===== git / GitHub 需要测的端点 =====
-# 用法：把本文件内容整段贴到 %APPDATA%\QuickerPing\hosts.txt 里（或复制需要的行），
+# 用法：把本文件内容整段贴到 %APPDATA%\QuickerPing\hosts.txt（或只复制需要的行），
 #       然后在动作窗口点「重新检测」。
-# 说明：默认测 443 的 HTTPS（能不能真正打开）；SSH 端口用 tcp/ 前缀，只测端口通不通。
+#
+# 语法：
+#   host                测 443 的 HTTPS（TLS 握手 + GET，拿到状态码就算通）
+#   host:8443           指定端口，同样走 HTTPS
+#   tcp/host:22         只测端口通不通（SSH 这类非 HTTPS 端口必须加 tcp/ 前缀）
+#   host | 用途 | 通了的说明 | 不通的说明        自定义"这个链接是干嘛的 / 后果"
+#   # 开头整行注释；proxy= / timeout= / icmp= 等是设置项
+#
+# 下面这些 GitHub 端点，用途和通/不通的后果程序里已经内置（不用自己写），
+# 直接列域名就有中文说明。想改成自己的措辞，按上面第 4 条加 | 即可。
 
 proxy=auto
 icmp=off
 
 # ---- git 走 HTTPS（clone / fetch / pull / push）必需 ----
-github.com                    网页 + git 传输（HTTPS 443）
-api.github.com                API / 令牌校验 / 设备码登录（GCM、gh 命令）
-codeload.github.com           下载 zip / tar.gz 源码包
-raw.githubusercontent.com     raw 文件
-objects.githubusercontent.com Release 附件 / LFS 对象
-github.githubassets.com       网页静态资源（浏览器打开 github.com 用）
+github.com
+api.github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+github.githubassets.com
 
 # ---- git 走 SSH 时（和 HTTPS 二选一即可）----
-tcp/github.com:22             SSH 直连（22 端口）
-tcp/ssh.github.com:443        22 被封时走 SSH over 443
+tcp/github.com:22
+tcp/ssh.github.com:443
 
-# ---- 可选：缺了不影响 clone/push，只是网页或 LFS 体验差一点 ----
-# alive.github.com              保持登录心跳
-# collector.github.com          前端埋点
-# media.githubusercontent.com   LFS 下载
-# github-cloud.s3.amazonaws.com LFS / 附件走 S3
-# avatars.githubusercontent.com 头像
-# github.com:80                 纯 HTTP（会 301 跳 HTTPS，一般不用测）
+# ---- 可选：缺了不影响 clone/push ----
+# alive.github.com
+# collector.github.com
+# media.githubusercontent.com
+# github-cloud.s3.amazonaws.com
+# avatars.githubusercontent.com
+
+# ---- 自己加的域名（示例）----
+# x.com | 社交网站 | 可以刷 X | X 打不开
